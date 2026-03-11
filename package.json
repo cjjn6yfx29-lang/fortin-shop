@@ -1,0 +1,305 @@
+import React, { useState, useEffect } from 'react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getFirestore, collection, doc, addDoc, onSnapshot, 
+  deleteDoc, serverTimestamp, setDoc 
+} from 'firebase/firestore';
+import { 
+  getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged 
+} from 'firebase/auth';
+import { 
+  ShoppingBag, ShoppingCart, X, Trash2, Plus, 
+  Settings, ChevronLeft, CheckCircle, Package, Mail, Phone, MapPin, Image as ImageIcon
+} from 'lucide-react';
+
+// --- Firebase Initialization ---
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'fortin-store-v2024-new';
+
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [view, setView] = useState('store');
+  const [products, setProducts] = useState([]);
+  const [orders, setOrders] = useState([]);
+  const [cart, setCart] = useState([]);
+  const [activeCat, setActiveCat] = useState('هەمی');
+  const [activeCurrency, setActiveCurrency] = useState('IQD');
+  const [rates, setRates] = useState({ USD: 1500, GBP: 1900 });
+  const [ads, setAds] = useState(['', '', '']);
+  const [selectedProduct, setSelectedProduct] = useState(null);
+  const [isAdminModalOpen, setIsAdminModalOpen] = useState(false);
+  const [adminPass, setAdminPass] = useState('');
+  const [adIndex, setAdIndex] = useState(0);
+
+  // Auth Effect
+  useEffect(() => {
+    const initAuth = async () => {
+      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+        await signInWithCustomToken(auth, __initial_auth_token);
+      } else {
+        await signInAnonymously(auth);
+      }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, setUser);
+    return () => unsubscribe();
+  }, []);
+
+  // Data Listeners
+  useEffect(() => {
+    if (!user) return;
+
+    // Fixed Pathing for Products
+    const unsubProducts = onSnapshot(
+      collection(db, 'artifacts', appId, 'public', 'data', 'products'),
+      (s) => setProducts(s.docs.map(d => ({ id: d.id, ...d.data() }))),
+      (err) => console.error("Firestore Error:", err)
+    );
+
+    // Fixed Pathing for Settings
+    const unsubSettings = onSnapshot(
+      doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global'),
+      (d) => {
+        if (d.exists()) {
+          const data = d.data();
+          if (data.rates) setRates(data.rates);
+          if (data.ads) setAds(data.ads);
+        }
+      }
+    );
+
+    // Fixed Pathing for Orders
+    const unsubOrders = onSnapshot(
+      collection(db, 'artifacts', appId, 'public', 'data', 'orders'),
+      (s) => setOrders(s.docs.map(d => ({ id: d.id, ...d.data() }))),
+      (err) => console.error("Firestore Error:", err)
+    );
+
+    return () => {
+      unsubProducts();
+      unsubSettings();
+      unsubOrders();
+    };
+  }, [user]);
+
+  // Auto-slide Ads
+  useEffect(() => {
+    const validAds = ads.filter(a => a && a.trim() !== '');
+    if (validAds.length <= 1) return;
+    const interval = setInterval(() => setAdIndex(p => (p + 1) % validAds.length), 5000);
+    return () => clearInterval(interval);
+  }, [ads]);
+
+  const formatPrice = (p) => {
+    if (activeCurrency === 'IQD') return `${Number(p).toLocaleString()} دینار`;
+    const rate = rates[activeCurrency] || 1;
+    const symbol = activeCurrency === 'USD' ? '$' : '£';
+    return `${symbol}${Math.round(p / rate).toLocaleString()}`;
+  };
+
+  const handleAdminCheck = () => {
+    if (adminPass === '7788') {
+      setView('admin');
+      setIsAdminModalOpen(false);
+      setAdminPass('');
+    } else {
+      alert('کۆد خەلەتە!');
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-900 font-['Noto_Sans_Arabic'] dir-rtl pb-24">
+      {/* Header */}
+      <header className="sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b border-slate-100 px-6 h-20 flex items-center justify-between">
+        <div onClick={() => setView('store')} className="flex items-center gap-3 cursor-pointer">
+          <div className="bg-blue-600 p-2 rounded-xl text-white shadow-lg"><ShoppingBag size={24} /></div>
+          <span className="text-2xl font-black">فۆرتین <span className="text-blue-600">ستۆر</span></span>
+        </div>
+        <div className="flex items-center gap-4">
+          <select 
+            value={activeCurrency}
+            onChange={(e) => setActiveCurrency(e.target.value)}
+            className="bg-slate-100 border-none rounded-xl px-3 py-2 text-xs font-black outline-none"
+          >
+            <option value="IQD">IQD</option>
+            <option value="USD">USD</option>
+            <option value="GBP">GBP (£)</option>
+          </select>
+          <button onClick={() => setIsAdminModalOpen(true)} className="text-slate-400 hover:text-blue-600"><Settings size={20} /></button>
+          <button onClick={() => cart.length > 0 && setView('checkout')} className="relative p-3 bg-slate-900 text-white rounded-2xl">
+            <ShoppingCart size={22} />
+            {cart.length > 0 && <span className="absolute -top-1 -right-1 bg-blue-500 text-white text-[10px] w-5 h-5 rounded-full flex items-center justify-center border-2 border-white">{cart.length}</span>}
+          </button>
+        </div>
+      </header>
+
+      <main className="max-w-7xl mx-auto p-6">
+        {view === 'store' && (
+          <div className="space-y-8 animate-in fade-in duration-500">
+            {ads.filter(a => a).length > 0 && (
+              <div className="relative h-48 md:h-80 rounded-[2.5rem] overflow-hidden shadow-xl bg-slate-200">
+                {ads.filter(a => a).map((ad, i) => (
+                  <img key={i} src={ad} className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-1000 ${i === adIndex ? 'opacity-100' : 'opacity-0'}`} />
+                ))}
+              </div>
+            )}
+            <div className="flex gap-2 overflow-x-auto no-scrollbar py-2">
+              {["هەمی", "مۆبایل", "تیڤی", "لاپتۆپ", "ئێکسسوارات", "یاری", "دیتر"].map(c => (
+                <button key={c} onClick={() => setActiveCat(c)} className={`px-8 py-4 rounded-2xl font-black text-sm whitespace-nowrap transition-all ${activeCat === c ? 'bg-blue-600 text-white shadow-lg' : 'bg-white text-slate-500'}`}>{c}</button>
+              ))}
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-6">
+              {products.filter(p => activeCat === 'هەمی' || p.category === activeCat).map(p => (
+                <div key={p.id} onClick={() => setSelectedProduct(p)} className="bg-white rounded-[2rem] overflow-hidden shadow-sm border border-slate-100 flex flex-col group cursor-pointer hover:shadow-xl transition-all">
+                  <div className="aspect-[3/4] relative overflow-hidden bg-slate-50">
+                    <img src={p.images?.[0]} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500" />
+                    <div className="absolute top-3 left-3 bg-white/90 px-2 py-1 rounded-lg font-black text-blue-600 text-[10px]">{formatPrice(p.price)}</div>
+                  </div>
+                  <div className="p-4 flex flex-col justify-between gap-3 h-full">
+                    <h3 className="font-bold text-xs text-slate-800 line-clamp-2">{p.name}</h3>
+                    <button onClick={(e) => { e.stopPropagation(); setCart([...cart, p]); }} className="w-full bg-slate-900 text-white py-3 rounded-xl font-black text-[10px]">بۆ دەستکی</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {view === 'checkout' && <CheckoutView cart={cart} setCart={setCart} setView={setView} formatPrice={formatPrice} db={db} appId={appId} />}
+        {view === 'admin' && <AdminView products={products} orders={orders} rates={rates} ads={ads} db={db} appId={appId} setView={setView} />}
+        {view === 'success' && (
+          <div className="flex flex-col items-center justify-center py-20 animate-in zoom-in">
+            <CheckCircle size={80} className="text-green-500 mb-6" />
+            <h2 className="text-3xl font-black mb-2 text-center">داواکاریا تە گەهشت!</h2>
+            <button onClick={() => setView('store')} className="bg-slate-900 text-white px-10 py-4 rounded-2xl font-black mt-8">ڤەگەڕیان</button>
+          </div>
+        )}
+      </main>
+
+      {/* Product Modal */}
+      {selectedProduct && (
+        <div className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-xl flex items-center justify-center p-4">
+          <div className="bg-white w-full max-w-4xl rounded-[3rem] overflow-hidden flex flex-col md:row max-h-[90vh]">
+            <div className="md:w-1/2 bg-slate-50 p-6 overflow-y-auto custom-scrollbar flex flex-col gap-4">
+              {selectedProduct.images?.filter(i => i).map((img, idx) => <img key={idx} src={img} className="w-full rounded-[2rem] shadow-sm" />)}
+            </div>
+            <div className="md:w-1/2 p-8 flex flex-col justify-between">
+              <div>
+                <div className="flex justify-between mb-4"><span className="bg-blue-50 text-blue-600 px-3 py-1 rounded-full text-[10px] font-black">{selectedProduct.category}</span><button onClick={() => setSelectedProduct(null)}><X /></button></div>
+                <h2 className="text-2xl font-black mb-2">{selectedProduct.name}</h2>
+                <div className="text-3xl font-black text-blue-600 mb-6">{formatPrice(selectedProduct.price)}</div>
+                <div className="bg-slate-50 p-5 rounded-2xl text-sm text-slate-600 h-40 overflow-y-auto">{selectedProduct.description}</div>
+              </div>
+              <button onClick={() => { setCart([...cart, selectedProduct]); setSelectedProduct(null); }} className="w-full bg-slate-900 text-white py-5 rounded-2xl font-black text-lg mt-6">زێدەکرن بۆ دەستکی</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Admin Login Modal */}
+      {isAdminModalOpen && (
+        <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white w-full max-w-xs rounded-[2rem] p-8 text-center animate-in zoom-in duration-200">
+            <h2 className="text-xl font-black mb-6">کارگێڕی</h2>
+            <input type="password" value={adminPass} onChange={e => setAdminPass(e.target.value)} className="w-full p-4 bg-slate-100 rounded-2xl mb-4 text-center text-2xl font-black outline-none border-2 border-transparent focus:border-blue-600" placeholder="****" />
+            <button onClick={handleAdminCheck} className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold">چوونە ژوور</button>
+            <button onClick={() => setIsAdminModalOpen(false)} className="text-slate-400 font-bold py-2 mt-2">پاشکەفتن</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CheckoutView({ cart, setCart, setView, formatPrice, db, appId }) {
+  const [form, setForm] = useState({ name: '', phone: '', email: '', address: '' });
+  const total = cart.reduce((s, i) => s + Number(i.price), 0);
+  const submit = async () => {
+    if (!form.name || !form.phone || !form.address) return alert("خانان پڕ بکە");
+    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'orders'), { ...form, items: cart.map(i => i.name), total, createdAt: serverTimestamp() });
+    setCart([]); setView('success');
+  };
+  return (
+    <div className="max-w-xl mx-auto bg-white p-10 rounded-[3rem] shadow-2xl animate-in fade-in">
+      <h2 className="text-2xl font-black mb-8 text-center">تەمامکرنا کڕینێ</h2>
+      <div className="space-y-4">
+        <input className="w-full p-4 bg-slate-50 rounded-2xl font-bold border outline-none focus:border-blue-600" placeholder="ناڤ" value={form.name} onChange={e => setForm({...form, name: e.target.value})} />
+        <input className="w-full p-4 bg-slate-50 rounded-2xl font-bold border outline-none focus:border-blue-600" placeholder="ژمارا تەلەفۆنێ" value={form.phone} onChange={e => setForm({...form, phone: e.target.value})} />
+        <input className="w-full p-4 bg-slate-50 rounded-2xl font-bold border outline-none focus:border-blue-600" placeholder="ئێمیل" value={form.email} onChange={e => setForm({...form, email: e.target.value})} />
+        <textarea className="w-full p-4 bg-slate-50 rounded-2xl h-24 font-bold border outline-none focus:border-blue-600" placeholder="ناڤنیشان" value={form.address} onChange={e => setForm({...form, address: e.target.value})} />
+        <div className="bg-slate-900 text-white p-5 rounded-2xl font-black text-center text-xl">{formatPrice(total)}</div>
+        <button onClick={submit} className="w-full bg-blue-600 text-white py-5 rounded-2xl font-black text-xl">هنارتن</button>
+      </div>
+    </div>
+  );
+}
+
+function AdminView({ products, orders, rates, ads, db, appId, setView }) {
+  const [p, setP] = useState({ name: '', price: '', category: 'مۆبایل', description: '', images: ['', '', '', '', ''] });
+  const [r, setR] = useState(rates);
+  const [a, setA] = useState(ads);
+
+  const saveSettings = async () => {
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global'), { rates: r, ads: a });
+    alert("هاتە پاراستن");
+  };
+
+  const addP = async () => {
+    if (!p.name || !p.price) return alert("ناڤ و بها یێ پێدڤینە");
+    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'products'), { ...p, price: Number(p.price), images: p.images.filter(i => i), createdAt: serverTimestamp() });
+    setP({ name: '', price: '', category: 'مۆبایل', description: '', images: ['', '', '', '', ''] });
+    alert("کەلوپەل هاتە زێدەکرن");
+  };
+
+  const delO = async (id) => { if(confirm("حەزف بیت؟")) await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'orders', id)); };
+
+  return (
+    <div className="grid lg:grid-cols-3 gap-8 animate-in fade-in">
+      <div className="space-y-6">
+        <div className="bg-white p-8 rounded-[3rem] shadow-xl">
+          <h3 className="font-black text-blue-600 mb-4 flex gap-2"><Settings /> ڕێکخستنان</h3>
+          <div className="space-y-4">
+            <input type="number" value={r.USD} onChange={e => setR({...r, USD: e.target.value})} className="w-full p-3 bg-slate-50 rounded-xl" placeholder="USD Rate" />
+            <input type="number" value={r.GBP} onChange={e => setR({...r, GBP: e.target.value})} className="w-full p-3 bg-slate-50 rounded-xl" placeholder="GBP Rate" />
+            {a.map((url, i) => <input key={i} value={url} onChange={e => { const na = [...a]; na[i] = e.target.value; setA(na); }} className="w-full p-2 bg-slate-50 rounded text-[10px]" placeholder={`Ad Link ${i+1}`} />)}
+            <button onClick={saveSettings} className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold">پاراستن</button>
+          </div>
+        </div>
+        <div className="bg-white p-8 rounded-[3rem] shadow-xl">
+          <h3 className="font-black mb-4 flex gap-2"><Plus /> زێدەکرن</h3>
+          <div className="space-y-3">
+            <input value={p.name} onChange={e => setP({...p, name: e.target.value})} className="w-full p-3 bg-slate-50 rounded-xl" placeholder="ناڤ" />
+            <input type="number" value={p.price} onChange={e => setP({...p, price: e.target.value})} className="w-full p-3 bg-slate-50 rounded-xl" placeholder="بها (IQD)" />
+            <select value={p.category} onChange={e => setP({...p, category: e.target.value})} className="w-full p-3 bg-slate-50 rounded-xl">
+              {["مۆبایل", "تیڤی", "لاپتۆپ", "ئێکسسوارات", "یاری", "دیتر"].map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+            <textarea value={p.description} onChange={e => setP({...p, description: e.target.value})} className="w-full p-3 bg-slate-50 rounded-xl h-20" placeholder="وەسف" />
+            {p.images.map((img, i) => <input key={i} value={img} onChange={e => { const ni = [...p.images]; ni[i] = e.target.value; setP({...p, images: ni}); }} className="w-full p-2 bg-slate-50 rounded text-[10px]" placeholder={`Image ${i+1}`} />)}
+            <button onClick={addP} className="w-full bg-slate-900 text-white py-4 rounded-xl font-bold">بەلاڤکرن</button>
+          </div>
+        </div>
+      </div>
+      <div className="lg:col-span-2 space-y-4">
+        <div className="flex justify-between items-center"><h3 className="font-black text-xl">داواکاری</h3><button onClick={() => setView('store')} className="text-blue-600 font-bold flex items-center gap-1"><ChevronLeft size={16} /> ڤەگەڕیان</button></div>
+        {orders.sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0)).map(o => (
+          <div key={o.id} className="bg-white p-6 rounded-[2rem] border relative flex justify-between shadow-sm">
+            <div>
+              <p className="font-black text-blue-600">{o.name}</p>
+              <p className="text-xs font-bold text-slate-500">{o.phone}</p>
+              <p className="text-[10px] text-slate-400">{o.address}</p>
+            </div>
+            <div className="text-left">
+              {o.items?.map((it, idx) => <p key={idx} className="text-[10px] font-bold">-{it}</p>)}
+              <p className="mt-2 font-black border-t pt-1 text-sm">{o.total?.toLocaleString()} IQD</p>
+            </div>
+            <button onClick={() => delO(o.id)} className="absolute top-4 left-4 text-slate-200 hover:text-red-500"><Trash2 size={18} /></button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
